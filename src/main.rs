@@ -1,4 +1,5 @@
-use std::ffi::CStr;
+use clipboard::{ClipboardContext, ClipboardProvider};
+use std::{ffi::CStr, thread::sleep, time::Duration};
 use x11::xlib::XKeysymToString;
 use xcb::{
     xinput::{self, Device},
@@ -8,7 +9,17 @@ use xcb::{
 
 mod read_map;
 
+// Found on random stackoverflow post
+const KEY_PRESS: u8 = 2;
+const KEY_RELEASE: u8 = 3;
+
+const BACKSPACE: u8 = 22;
+const CONTROL: u8 = 37;
+const V: u8 = 55;
+
 fn main() -> xcb::Result<()> {
+    let mut clip: ClipboardContext = ClipboardProvider::new().unwrap();
+
     let hotstring_map = read_map::read_map("map").unwrap();
 
     let (conn, screen_num) = Connection::connect_with_extensions(None, &[Input], &[])?;
@@ -56,50 +67,55 @@ fn main() -> xcb::Result<()> {
 
     let mut state = String::new();
     loop {
-        match conn.wait_for_event()? {
-            xcb::Event::Input(xinput::Event::KeyPress(key_press)) => {
-                let keycode = key_press.detail();
-                let index = (keycode - min_keycode) * keysyms_per_keycode as u32;
-                let keysym = keysyms[index as usize];
+        if let xcb::Event::Input(xinput::Event::KeyPress(key_press)) = conn.wait_for_event()? {
+            // Reverse engineered from https://github.com/neXromancers/hacksaw/blob/867e95473c338861de048f3beb56f771997d3331/src/lib/mod.rs#L142-L158
+            let keycode = key_press.detail();
+            let index = (keycode - min_keycode) * keysyms_per_keycode as u32;
+            let keysym = keysyms[index as usize];
 
-                // range of printable ascii characters
-                if let 32..=126 = keysym {
-                    // limit string size to 30
-                    if state.len() == 30 {
-                        state.remove(0);
-                    }
-                    state.push(keysym as u8 as char);
-
-                    let val = hotstring_map.iter().find(|vec| state.ends_with(&vec[0]));
-                    if let Some(val) = val {
-                        for _ in val[0].char_indices() {
-                            fake_input_keycode(&conn, 22, root, device.id(), 3);
-                            fake_input_keycode(&conn, 22, root, device.id(), 2);
-                            fake_input_keycode(&conn, 22, root, device.id(), 3);
-                        }
-                        for character in val[1].as_bytes() {
-                            let index = keysyms
-                                .iter()
-                                .position(|&keysym| keysym == *character as u32)
-                                .expect("failed to find keysym");
-                            let keycode = index as u32 / keysyms_per_keycode as u32 + min_keycode;
-
-                            fake_input_keycode(&conn, keycode, root, device.id(), 3);
-                            fake_input_keycode(&conn, keycode, root, device.id(), 2);
-                            fake_input_keycode(&conn, keycode, root, device.id(), 3);
-                        }
-                        conn.flush()?;
-                    }
+            // range of printable ascii characters
+            if let 32..=126 = keysym {
+                // limit string size to 30
+                if state.len() == 30 {
+                    state.remove(0);
                 }
+                state.push(keysym as u8 as char);
 
-                println!(
-                    "Keycode: {}\nKeysym: {}\nKeysymString: {}\n",
-                    keycode,
-                    keysym,
-                    keysym_to_string(keysym)
-                );
+                if let Some(val) = hotstring_map.iter().find(|vec| state.ends_with(&vec[0])) {
+                    // delete hotstring
+                    for _ in val[0].char_indices() {
+                        fake_input_keycode(&conn, BACKSPACE, root, device.id(), KEY_RELEASE);
+                        fake_input_keycode(&conn, BACKSPACE, root, device.id(), KEY_PRESS);
+                        fake_input_keycode(&conn, BACKSPACE, root, device.id(), KEY_RELEASE);
+                    }
+
+                    // backs up clipboard
+                    let prev_clip = clip.get_contents().unwrap();
+
+                    clip.set_contents(val[1].to_string()).unwrap();
+
+                    // presses ctrl+v to paste
+                    fake_input_keycode(&conn, CONTROL, root, device.id(), KEY_RELEASE);
+                    fake_input_keycode(&conn, V, root, device.id(), KEY_RELEASE);
+                    fake_input_keycode(&conn, CONTROL, root, device.id(), KEY_PRESS);
+                    fake_input_keycode(&conn, V, root, device.id(), KEY_PRESS);
+                    fake_input_keycode(&conn, V, root, device.id(), KEY_RELEASE);
+                    fake_input_keycode(&conn, CONTROL, root, device.id(), KEY_RELEASE);
+
+                    conn.flush()?;
+
+                    // without the delay it pastes old clipboard contents
+                    sleep(Duration::from_millis(100));
+                    clip.set_contents(prev_clip.to_string()).unwrap();
+                }
             }
-            _ => {}
+
+            println!(
+                "Keycode: {}\nKeysym: {}\nKeysymString: {}\n",
+                keycode,
+                keysym,
+                keysym_to_string(keysym)
+            );
         }
     }
 }
@@ -125,16 +141,16 @@ pub fn keysym_to_string(keysym: u32) -> String {
 
 pub fn fake_input_keycode(
     conn: &xcb::Connection,
-    keycode: u32,
+    keycode: u8,
     root: xcb::x::Window,
     deviceid: u16,
     input_type: u8,
 ) {
     conn.send_request(&xcb::xtest::FakeInput {
         r#type: input_type,
-        detail: keycode as u8,
+        detail: keycode,
         time: 0,
-        root: root,
+        root,
         root_x: 0,
         root_y: 0,
         deviceid: deviceid as u8,
