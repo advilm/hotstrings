@@ -81,9 +81,9 @@ fn main() -> xcb::Result<()> {
                 }
                 state.push(keysym as u8 as char);
 
-                if let Some(val) = hotstring_map.iter().find(|vec| state.ends_with(&vec[0])) {
+                if let Some(val) = hotstring_map.iter().find(|vec| state.ends_with(&vec.0)) {
                     // delete hotstring
-                    for _ in val[0].char_indices() {
+                    for _ in val.0.char_indices() {
                         fake_input_keycode(&conn, BACKSPACE, root, device.id(), KEY_RELEASE);
                         fake_input_keycode(&conn, BACKSPACE, root, device.id(), KEY_PRESS);
                         fake_input_keycode(&conn, BACKSPACE, root, device.id(), KEY_RELEASE);
@@ -92,7 +92,7 @@ fn main() -> xcb::Result<()> {
                     // backs up clipboard
                     let prev_clip = clip.get_contents().unwrap();
 
-                    clip.set_contents(val[1].to_string()).unwrap();
+                    clip.set_contents(val.1.to_string()).unwrap();
 
                     // presses ctrl+v to paste
                     fake_input_keycode(&conn, CONTROL, root, device.id(), KEY_RELEASE);
